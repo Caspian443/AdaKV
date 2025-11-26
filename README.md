@@ -32,6 +32,7 @@ Many cutting-edge methods have integrated the Adaptive Budget Allocation of AdaK
 * The Sparse Frontier: Sparse Attention Trade-offs in Transformer LLMs [paper](https://arxiv.org/pdf/2504.17768), [code](https://github.com/PiotrNawrot/sparse-frontier)
 * KV-Compress: Paged KV-Cache Compression with Variable Compression Rates per Attention Head [paper](https://arxiv.org/abs/2410.00161), [code](https://arxiv.org/abs/2410.00161)
 * Draft-based Approximate Inference for LLMs [paper](https://arxiv.org/pdf/2506.08373), [code](https://github.com/furiosa-ai/draft-based-approx-llm)
+* Mixing Importance with Diversity: Joint Optimization for KV Cache Compression in Large Vision-Language Models [paper](https://arxiv.org/abs/2510.20707), [code](https://github.com/xuyang-liu16/MixKV)
 
 
 ## Usage of this Repo
