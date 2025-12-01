@@ -18,7 +18,8 @@ generator_flag = []
 cc_flag = []
 cc_flag.append("-gencode")
 cc_flag.append("arch=compute_80,code=sm_80")
-
+cc_flag.append("-gencode")
+cc_flag.append("arch=compute_90,code=sm_90")
 
 # helper function to get cuda version
 def get_cuda_bare_metal_version(cuda_dir):

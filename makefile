@@ -1,3 +1,3 @@
 i install:
 	cd csrc && make
-	pip install -e .
+	python -m pip install --no-index --find-links="~/cyx/adakv-dependencies" -e .

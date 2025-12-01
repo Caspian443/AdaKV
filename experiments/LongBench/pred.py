@@ -227,12 +227,12 @@ if __name__ == '__main__':
 
     for dataset in datasets:
         if args.e:
-            data = load_dataset(args.dataset, f"{dataset}_e", split='test', data_dir=f"{args.dataset}/data")
+            data = load_dataset(args.dataset, f"{dataset}_e", split='test', data_dir="data")
             if not os.path.exists(f"pred_e/{args.out_name}"):
                 os.makedirs(f"pred_e/{args.out_name}")
             out_path = f"pred_e/{args.out_name}/{dataset}.jsonl"
         else:
-            data = load_dataset(args.dataset, f"{dataset}", split='test', data_dir=f"{args.dataset}/data")
+            data = load_dataset(args.dataset, f"{dataset}", split='test', data_dir="data")
             if not os.path.exists(f"pred/{args.out_name}"):
                 os.makedirs(f"pred/{args.out_name}")
             out_path = f"pred/{args.out_name}/{dataset}.jsonl"

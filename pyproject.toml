@@ -14,7 +14,7 @@ dependencies = [
     "jieba==0.42.1",
     "datasets",
     "accelerate",
-    "tqdm==4.66.1",
+    "tqdm>=4.66.3",
     "icetk==0.0.7",
     "transformers==4.44.2",
 ]
