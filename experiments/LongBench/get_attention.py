@@ -82,29 +82,29 @@ def manual_calcul_attn_score(key_states, query_states, window_size, kernel_size,
         # 序列太短，直接平均
         attn_weights_mean = attn_weights.mean(dim=-2)
 
-    # GQA handling
-    if gqa_support:
-        attn_weights_mean = attn_weights_mean.view(attn_weights_mean.shape[0], num_heads//num_key_value_groups, num_key_value_groups, -1)
-        if gqa_func == 'max':
-            attn_weights_mean = attn_weights_mean.max(dim=-2).values
-        elif gqa_func == 'mean':
-            attn_weights_mean = attn_weights_mean.mean(dim=-2)
-        else:
-            raise ValueError('gqa_func not supported')
+    # # GQA handling
+    # if gqa_support:
+    #     attn_weights_mean = attn_weights_mean.view(attn_weights_mean.shape[0], num_heads//num_key_value_groups, num_key_value_groups, -1)
+    #     if gqa_func == 'max':
+    #         attn_weights_mean = attn_weights_mean.max(dim=-2).values
+    #     elif gqa_func == 'mean':
+    #         attn_weights_mean = attn_weights_mean.mean(dim=-2)
+    #     else:
+    #         raise ValueError('gqa_func not supported')
 
-    # Pooling
-    if pooling == 'avgpool':
-        attn_weights_mean_pooling = F.avg_pool1d(attn_weights_mean, kernel_size=kernel_size,
-                                                    padding=kernel_size // 2,
-                                                    stride=1)
-    elif pooling == 'maxpool':
-        attn_weights_mean_pooling = F.max_pool1d(attn_weights_mean, kernel_size=kernel_size,
-                                                    padding=kernel_size // 2,
-                                                    stride=1)
-    else:
-        raise ValueError('Pooling method not supported')
+    # # Pooling
+    # if pooling == 'avgpool':
+    #     attn_weights_mean_pooling = F.avg_pool1d(attn_weights_mean, kernel_size=kernel_size,
+    #                                                 padding=kernel_size // 2,
+    #                                                 stride=1)
+    # elif pooling == 'maxpool':
+    #     attn_weights_mean_pooling = F.max_pool1d(attn_weights_mean, kernel_size=kernel_size,
+    #                                                 padding=kernel_size // 2,
+    #                                                 stride=1)
+    # else:
+    #     raise ValueError('Pooling method not supported')
         
-    return attn_weights_mean_pooling
+    return attn_weights_mean
 
 class AttnScoreCapturer:
     """
