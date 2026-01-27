@@ -125,13 +125,15 @@ def slm_MistralModel_forward(
                 cache_position=cache_position,
             )
 
-        hidden_states = layer_outputs[0]
+        if isinstance(layer_outputs, tuple):
+            hidden_states = layer_outputs[0]
+            if output_attentions:
+                all_self_attns += (layer_outputs[1],)
+        else:
+            hidden_states = layer_outputs
 
         if use_cache:
-            next_decoder_cache = layer_outputs[2 if output_attentions else 1]
-
-        if output_attentions:
-            all_self_attns += (layer_outputs[1],)
+            next_decoder_cache = past_key_values
 
     hidden_states = self.norm(hidden_states)
 
