@@ -11,6 +11,8 @@ from transformers.models.mistral.modeling_mistral import (
 )
 from transformers.modeling_attn_mask_utils import _prepare_4d_causal_attention_mask_for_sdpa, \
     _prepare_4d_causal_attention_mask
+from transformers.masking_utils import create_causal_mask
+
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.modeling_flash_attention_utils import _flash_attention_forward
 from transformers.models.mistral.modeling_mistral import (
@@ -79,8 +81,16 @@ def adaptive_MistralModel_forward(
     if position_ids is None:
         position_ids = cache_position.unsqueeze(0)
 
-    causal_mask = self._update_causal_mask(
-        attention_mask, inputs_embeds, cache_position, past_key_values, use_cache, output_attentions
+    # causal_mask = self._update_causal_mask(
+    #     attention_mask, inputs_embeds, cache_position, past_key_values, use_cache, output_attentions
+    # )
+    causal_mask = create_causal_mask(
+        config=self.config,
+        input_embeds=inputs_embeds,
+        attention_mask=attention_mask,
+        cache_position=cache_position,
+        past_key_values=past_key_values,
+        position_ids=position_ids,
     )
 
     hidden_states = inputs_embeds
