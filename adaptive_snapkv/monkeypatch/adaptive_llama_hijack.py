@@ -317,7 +317,7 @@ def adaptive_llama_flash_attn2_forward(
         #  TODO: support batch size > 1
         assert bsz == 1
         attn_output = attn_output.reshape(bsz, self.config.num_attention_heads, q_len, self.head_dim)
-        attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.hidden_size)
+        attn_output = attn_output.transpose(1, 2).reshape(bsz, q_len, self.config.hidden_size)
 
     attn_output = self.o_proj(attn_output)
 
