@@ -273,7 +273,7 @@ def slm_mistral_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_values
+    return attn_output, attn_weights
 
 
 def prepare_inputs_for_generation_mistral(
