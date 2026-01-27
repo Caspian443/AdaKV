@@ -180,9 +180,9 @@ def slm_mistral_flash_attn2_forward(
     key_states = self.k_proj(hidden_states)
     value_states = self.v_proj(hidden_states)
 
-    query_states = query_states.view(bsz, q_len, self.num_heads, self.head_dim).transpose(1, 2)
-    key_states = key_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
-    value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
+    query_states = query_states.view(bsz, q_len, self.config.num_attention_heads, self.head_dim).transpose(1, 2)
+    key_states = key_states.view(bsz, q_len, self.config.num_key_value_heads, self.head_dim).transpose(1, 2)
+    value_states = value_states.view(bsz, q_len, self.config.num_key_value_heads, self.head_dim).transpose(1, 2)
 
     kv_seq_len = key_states.shape[-2]
     if past_key_values is not None:
@@ -267,7 +267,7 @@ def slm_mistral_flash_attn2_forward(
         is_causal=self.is_causal,
     )
 
-    attn_output = attn_output.reshape(bsz, q_len, self.num_heads * self.head_dim).contiguous()
+    attn_output = attn_output.reshape(bsz, q_len, self.config.num_attention_heads * self.head_dim).contiguous()
     attn_output = self.o_proj(attn_output)
 
     if not output_attentions:
