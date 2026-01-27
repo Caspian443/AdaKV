@@ -116,7 +116,7 @@ def fixed_MistralModel_forward(
                 hidden_states,
                 attention_mask=causal_mask,
                 position_ids=position_ids,
-                past_key_value=past_key_values,
+                past_key_values=past_key_values,
                 output_attentions=output_attentions,
                 use_cache=use_cache,
                 cache_position=cache_position,
@@ -156,12 +156,12 @@ def fixed_mistral_flash_attn2_forward(
     hidden_states: torch.Tensor,
     attention_mask: Optional[torch.Tensor] = None,
     position_ids: Optional[torch.LongTensor] = None,
-    past_key_value: Optional[Cache] = None,
+    past_key_values: Optional[Cache] = None,
     output_attentions: bool = False,
     use_cache: bool = False,
     cache_position: Optional[torch.LongTensor] = None,
 ):
-    if isinstance(past_key_value, StaticCache):
+    if isinstance(past_key_values, StaticCache):
         raise ValueError(
             "`static` cache implementation is not compatible with `attn_implementation==flash_attention_2` "
             "make sure to use `sdpa` in the mean time, and open an issue at https://github.com/huggingface/transformers"
@@ -183,7 +183,7 @@ def fixed_mistral_flash_attn2_forward(
     value_states = value_states.view(bsz, q_len, self.num_key_value_heads, self.head_dim).transpose(1, 2)
 
     kv_seq_len = key_states.shape[-2]
-    if past_key_value is not None:
+    if past_key_values is not None:
         kv_seq_len += cache_position[0]
 
     cos, sin = self.rotary_emb(value_states, position_ids)
@@ -192,9 +192,9 @@ def fixed_mistral_flash_attn2_forward(
     dropout_rate = 0.0 if not self.training else self.attention_dropout
 
     cache_kwargs = {"sin": sin, "cos": cos}  # Specific to RoPE models
-    if past_key_value is not None:
+    if past_key_values is not None:
         # Activate slicing cache only if the config has a value `sliding_windows` attribute
-        cache_has_contents = past_key_value.get_seq_length(self.layer_idx) > 0
+        cache_has_contents = past_key_values.get_seq_length(self.layer_idx) > 0
         if (
             getattr(self.config, "sliding_window", None) is not None
             and kv_seq_len > self.config.sliding_window
@@ -202,8 +202,8 @@ def fixed_mistral_flash_attn2_forward(
         ):
             slicing_tokens = 1 - self.config.sliding_window
 
-            past_key = past_key_value[self.layer_idx][0]
-            past_value = past_key_value[self.layer_idx][1]
+            past_key = past_key_values[self.layer_idx][0]
+            past_value = past_key_values[self.layer_idx][1]
 
             past_key = past_key[:, :, slicing_tokens:, :].contiguous()
             past_value = past_value[:, :, slicing_tokens:, :].contiguous()
@@ -223,10 +223,10 @@ def fixed_mistral_flash_attn2_forward(
             if not self.kv_cluster.gqa_support:
                     key_states = repeat_kv(key_states, self.num_key_value_groups)
                     value_states = repeat_kv(value_states, self.num_key_value_groups)
-            key_states, value_states = past_key_value.update(key_states, value_states, self.layer_idx, cache_kwargs)
+            key_states, value_states = past_key_values.update(key_states, value_states, self.layer_idx, cache_kwargs)
         else:
             key_states_compress, value_states_compress = self.kv_cluster.update_kv(key_states, query_states, value_states)
-            past_key_value.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
+            past_key_values.update(key_states_compress, value_states_compress, self.layer_idx, cache_kwargs)
 
     # In PEFT, usually we cast the layer norms in float32 for training stability reasons
     # therefore the input hidden states gets silently casted in float32. Hence, we need
@@ -275,7 +275,7 @@ def fixed_mistral_flash_attn2_forward(
     if not output_attentions:
         attn_weights = None
 
-    return attn_output, attn_weights, past_key_value
+    return attn_output, attn_weights, past_key_values
 
 
 def prepare_inputs_for_generation_mistral(
