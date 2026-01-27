@@ -15,12 +15,38 @@ class DynamicCacheSplitHeadFlatten(Cache):
     """
     Flattened version of DynamicCacheSplitHead
     """
-    def __init__(self) ->None:
+    def __init__(self, num_layers: Optional[int] = None) ->None:
         # Token wise List[]  Head wise KV List[torch.Tensor]
-        super().__init__()
+        # In newer transformers versions, Cache.__init__ expects layers (list of objects)
+        # or layer_class_to_replicate (class type). It does NOT accept int for layers.
+        
+        # We skip super().__init__ because it tries to set self.layers, which we might want to manage differently
+        # or we just call it with empty list.
+        # But to be safe against the property conflict (if we keep property):
+        # We MUST NOT use property if we want super().__init__ to work.
+        # So I will REMOVE the `layers` property and instead just let `self.layers` be a list if needed.
+        # But we don't really use `self.layers` for storage.
+        # So I will just set `self.layers = []` manually to satisfy any readers.
+        
         self.key_cache: List[List[torch.Tensor]] = []
         self.value_cache: List[List[torch.Tensor]] = []
         self._seen_tokens = 0
+        self.layers = [] 
+
+    @property
+    def is_sliding(self):
+        # Override is_sliding to avoid iterating over self.layers
+        return [False] * len(self.key_cache)
+
+    def get_mask_sizes(self, cache_position, layer_idx):
+        # New method required by newer transformers
+        if len(self.key_cache) <= layer_idx:
+            # Prefill: KV length is usually just what we are adding
+            return 0, 0
+        
+        # So we should return (current_cache_length, 0).
+        kv_length = self.get_seq_length(layer_idx)
+        return kv_length, 0
 
     def __len__(self):
         return len(self.key_cache)
@@ -36,29 +62,49 @@ class DynamicCacheSplitHeadFlatten(Cache):
             raise KeyError(f"Cache only has {len(self)} layers, attempted to access layer with index {layer_idx}")
 
     def update(self, key_states, value_states, layer_idx, cache_kwargs=None):
-        # NOTE: k, v = [head_num](bs, 1, seqlen, dim)
-        # each layer is a flatten layout like:
-        # [head_0_len + head_1_len + ..., dim]
+        # NOTE: Two modes:
+        # 1. Prefill: key_states/value_states are 2D [total_len, dim] (compressed, flattened)
+        # 2. Decoding: key_states/value_states are 4D [bs, head, seqlen, dim] (new tokens)
+        
         if len(self.key_cache) <= layer_idx:
+            # First call for this layer - store the compressed KV from prefill
             self.key_cache.append(key_states)
             self.value_cache.append(value_states)
+            # Add dummy layer to self.layers to keep lengths consistent if anyone checks
+            self.layers.append(type('DummyLayer', (), {'is_sliding': False})())
         else:
-            assert self.key_cache[layer_idx].dim() == 2
-            bs, head, seqlen, dim = key_states.shape
-            assert bs == 1 and seqlen == 1
-            # NOTE: phase 2. we got [bs, head, seqlen, dim] as k, v input
-            head_lens = cache_kwargs["head_lens"]
-            cu_klen = cache_kwargs["cu_klen"]
+            # Subsequent calls - append new tokens during decoding
+            # key_states should be 4D: [bs, head, seqlen, dim]
+            if key_states.dim() == 4:
+                bs, head, seqlen, dim = key_states.shape
+                assert bs == 1 and seqlen == 1, "Decoding should have batch=1 and seqlen=1"
+                assert self.key_cache[layer_idx].dim() == 2, "Cache should be 2D flattened"
+                
+                # Get metadata for varlen update
+                head_lens = cache_kwargs["head_lens"]
+                cu_klen = cache_kwargs["cu_klen"]
 
-            # TODO: wrap as a python interface
-            from tiny_api_cuda import update_flatten_view
-            new_key_cache = update_flatten_view(self.key_cache[layer_idx].view(-1,dim), key_states.view(-1, dim), head_lens, cu_klen)
-            new_value_cache = update_flatten_view(self.value_cache[layer_idx].view(-1,dim), value_states.view(-1, dim), head_lens, cu_klen)
+                # Use CUDA kernel to efficiently update flattened cache
+                from tiny_api_cuda import update_flatten_view
+                new_key_cache = update_flatten_view(
+                    self.key_cache[layer_idx].view(-1, dim), 
+                    key_states.view(-1, dim), 
+                    head_lens, 
+                    cu_klen
+                )
+                new_value_cache = update_flatten_view(
+                    self.value_cache[layer_idx].view(-1, dim), 
+                    value_states.view(-1, dim), 
+                    head_lens, 
+                    cu_klen
+                )
 
-
-            self.key_cache[layer_idx] = new_key_cache
-            self.value_cache[layer_idx] = new_value_cache
-
+                self.key_cache[layer_idx] = new_key_cache
+                self.value_cache[layer_idx] = new_value_cache
+            else:
+                # If 2D, just replace (shouldn't happen in normal flow)
+                self.key_cache[layer_idx] = key_states
+                self.value_cache[layer_idx] = value_states
 
         return self.key_cache[layer_idx], self.value_cache[layer_idx]
 
@@ -81,89 +127,16 @@ class DynamicCacheSplitHeadFlatten(Cache):
         return legacy_cache
 
     @classmethod
-    def from_legacy_cache(cls, past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None) -> "DynamicCacheEachHead":
+    def from_legacy_cache(cls, past_key_values: Optional[Tuple[Tuple[torch.FloatTensor]]] = None) -> "DynamicCacheSplitHeadFlatten":
         """Converts a cache in the legacy cache format into an equivalent `DynamicCache`."""
-        cache = cls()
+        # Infer number of layers from past_key_values if available
+        num_layers = len(past_key_values) if past_key_values is not None else None
+        cache = cls(num_layers=num_layers)
         if past_key_values is not None:
             for layer_idx in range(len(past_key_values)):
                 key_states, value_states = past_key_values[layer_idx]
                 cache.update(key_states, value_states, layer_idx)
         return cache
-
-
-
-# class DynamicCacheSplitHead(Cache):
-#     """
-#     demo for illustrate the splited cache update
-#     This class is slower than DynamicCacheSplitHeadFlatten, due to the frequent tensor copy
-#     """
-#     def __init__(self) ->None:
-#         # Token wise List[]  Head wise KV List[torch.Tensor]
-#         super().__init__()
-#         self.key_cache: List[List[torch.Tensor]] = []
-#         self.value_cache: List[List[torch.Tensor]] = []
-#         self._seen_tokens = 0
-
-#     def __len__(self):
-#         return len(self.key_cache)
-
-#     def __iter__(self):
-#         for layer_idx in range(len(self)):
-#             yield (tuple(self.key_cache[layer_idx]),tuple(self.value_cache[layer_idx]))
-
-#     def __getitem__(self, layer_idx: int) -> Tuple[Tuple[torch.Tensor],Tuple[torch.Tensor]]:
-#         if layer_idx < len(self):
-#             return (tuple(self.key_cache[layer_idx]),tuple(self.value_cache[layer_idx]))
-#         else:
-#             raise KeyError(f"Cache only has {len(self)} layers, attempted to access layer with index {layer_idx}")
-
-#     def update(
-#         self,
-#         key_states: List[torch.Tensor],
-#         value_states: List[torch.Tensor],
-#         layer_idx: int,
-#         cache_kwargs: Optional[Dict[str, Any]] = None,
-#     ) -> Tuple[Tuple[torch.Tensor,...],Tuple[torch.Tensor,...]]:
-#         if layer_idx == 0:
-#             self._seen_tokens += max(map(lambda states: states.shape[-2], key_states))
-
-#         if len(self.key_cache)<=layer_idx:
-#             self.key_cache.append(list(key_states))
-#             self.value_cache.append(list(value_states))
-#         else:
-#             # tensor shape[ [bsz, seq, dim] * head_nums]
-#             # [bsz,\sum seq,dim]
-#             # [bsz,\sum seq+headnum,dim ]
-#             for head_idx in range(len(key_states)):
-#                 self.key_cache[layer_idx][head_idx] = torch.cat([self.key_cache[layer_idx][head_idx],key_states[head_idx]], dim=-2)
-#                 self.value_cache[layer_idx][head_idx] = torch.cat([self.value_cache[layer_idx][head_idx],value_states[head_idx]], dim=-2)
-#         return tuple(self.key_cache[layer_idx]), tuple(self.value_cache[layer_idx])
-
-#     def get_seq_length(self, layer_idx: Optional[int] = 0) -> int:
-#         if len(self.key_cache) <= layer_idx:
-#             return 0
-#         return max(map(lambda states: states.shape[-2], self.key_cache[layer_idx]))
-
-#     def get_max_length(self) -> Optional[int]:
-#         return None
-
-
-#     # Tuple[Tuple[Tuple[torch.Tensor,...],Tuple[torch.Tensor,...]],...]
-#     def to_legacy_cache(self)-> Tuple[Tuple[Tuple[torch.Tensor,...],Tuple[torch.Tensor,...]],...]:
-#         """Converts the `DynamicCache` instance into the its equivalent in the legacy cache format."""
-#         legacy_cache = ()
-#         for layer_idx in range(len(self)):
-#             legacy_cache += ((tuple(self.key_cache[layer_idx]), tuple(self.value_cache[layer_idx])),)
-#         return legacy_cache
-#     @classmethod
-#     def from_legacy_cache(cls,past_key_values:Optional[ Tuple[Tuple[Tuple[torch.Tensor,...],Tuple[torch.Tensor,...]],...]]=None)->"DynamicCacheEachHead":
-#         cache = cls()
-#         if past_key_values is not None:
-#             for layer_idx in range(len(past_key_values)):
-#                 key_states,value_states = past_key_values[layer_idx]
-#                 cache.update(list(key_states),list(value_states),layer_idx)
-#         return cache
-
 
 
 # Copied from transformers.models.llama.modeling_llama.repeat_kv for gqa_support
@@ -178,121 +151,6 @@ def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
     hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
     return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
 
-class SnapKVCluster():
-    def __init__(self, window_size = 64, max_capacity_prompt = 256 + 64, kernel_size = 5, pooling = 'avgpool', layer_idx = None, num_hidden_layers = None, pyram_mode = False, pyram_beta = 20,gqa_support=False,num_key_value_groups = 1, gqa_func=None):
-        self.window_size = window_size
-        self.max_capacity_prompt = max_capacity_prompt
-        assert self.max_capacity_prompt - self.window_size > 0
-        self.kernel_size = kernel_size
-        self.pooling = pooling
-
-        self.pyram_init = False
-        self.pyram_mode = pyram_mode
-        self.pyram_beta = pyram_beta
-        self.layer_idx = layer_idx
-        self.num_hidden_layers = num_hidden_layers
-        
-        # support gqa
-        self.gqa_support = gqa_support
-        self.num_key_value_groups = num_key_value_groups
-        self.gqa_func = gqa_func
-        if self.gqa_support:
-            assert gqa_func is not None, "gqa_func should not be None"
-            assert gqa_func in ['max','mean'], "currently gqa_func should be in ['max','mean']"
-            if self.num_key_value_groups == 1:
-                warnings.warn("gqa_support is enabled, but num_key_value_groups is 1, which means the model is not using gqa. Please check the model configuration.")
-
-
-
-    def reset(self, window_size = 64, max_capacity_prompt = 256 + 64, kernel_size = 5, pooling = 'avgpool'):
-        self.window_size = window_size
-        self.max_capacity_prompt = max_capacity_prompt
-        assert self.max_capacity_prompt - self.window_size > 0
-        self.kernel_size = kernel_size
-        self.pooling = pooling
-
-    def update_kv(self, origin_key_states, query_states, origin_value_states):
-        
-        # support gqa
-        key_states = repeat_kv(origin_key_states, self.num_key_value_groups)
-        value_states = repeat_kv(origin_value_states, self.num_key_value_groups)
-        # check if prefix phase
-        assert key_states.shape[-2] == query_states.shape[-2]
-        bsz, num_heads, q_len, head_dim = query_states.shape
-
-        # compute pyramidal capacity
-        if self.pyram_mode and not self.pyram_init:
-            # NOTE: (max_num + min_num) / 2 == base_capacity to restrict the total capacity
-            base_capacity = self.max_capacity_prompt - self.window_size
-            min_num = base_capacity // self.pyram_beta
-            max_num = base_capacity * 2 - min_num
-                
-            # if the max_num is larger than the query length, we need to adjust the max_num
-            if max_num >= q_len - self.window_size:
-                max_num = q_len - self.window_size
-                min_num = base_capacity * 2 - max_num
-        
-            # NOTE: compute interval
-            steps = (max_num - min_num) // (self.num_hidden_layers - 1)
-
-            self.max_capacity_prompt = max_num - self.layer_idx * steps + self.window_size
-            self.pyram_init = True
-            print(f"Pyram mode adaptive capacity, layer: {self.layer_idx}, max_capacity_prompt: {self.max_capacity_prompt}, base_capacity: {self.max_capacity_prompt - self.window_size}", flush=True)
-
-        if q_len < self.max_capacity_prompt:
-            # support gqa
-            if self.gqa_support:
-                return origin_key_states, origin_value_states
-            else:
-                return key_states, value_states
-        else:
-            attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(head_dim)
-            mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min, device=attn_weights.device)
-            mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
-            mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
-            mask = mask.to(attn_weights.device)
-            attention_mask = mask[None, None, :, :]
-
-            attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
-
-            attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-            attn_weights_mean = attn_weights[:, :, -self.window_size:, : -self.window_size].mean(dim = -2)
-            
-            # gqa_support 
-            if self.gqa_support:
-                attn_weights_mean = attn_weights_mean.view(attn_weights_mean.shape[0], -1, self.num_key_value_groups, attn_weights_mean.shape[-1])
-                if self.gqa_func == 'max':
-                    attn_weights_mean = attn_weights_mean.max(dim=-2).values
-                elif self.gqa_func == 'mean':
-                    attn_weights_mean = attn_weights_mean.mean(dim=-2)
-                else:
-                    raise ValueError('gqa_func not supported')
-                
-            if self.pooling == 'avgpool':
-                attn_cache = F.avg_pool1d(attn_weights_mean, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
-            elif self.pooling == 'maxpool':
-                attn_cache = F.max_pool1d(attn_weights_mean, kernel_size = self.kernel_size, padding=self.kernel_size//2, stride=1)
-            else:
-                raise ValueError('Pooling method not supported')
-
-            indices = attn_cache.topk(self.max_capacity_prompt - self.window_size, dim=-1).indices
-            indices = indices.unsqueeze(-1).expand(-1, -1, -1, head_dim)
-            
-            # support gqa
-            if self.gqa_support:
-                k_past_compress = origin_key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-                v_past_compress = origin_value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-                k_cur = origin_key_states[:, :, -self.window_size:, :]
-                v_cur = origin_value_states[:, :, -self.window_size:, :]
-            else:
-                k_past_compress = key_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-                v_past_compress = value_states[:, :, :-self.window_size, :].gather(dim = 2, index = indices)
-                k_cur = key_states[:, :, -self.window_size:, :]
-                v_cur = value_states[:, :, -self.window_size:, :]
-            key_states = torch.cat([k_past_compress, k_cur], dim = 2)
-            value_states = torch.cat([v_past_compress, v_cur], dim = 2)
-            return key_states, value_states
-   
 
 class AdaptiveSnapKVCluster():
     def __init__(self, window_size = 32, kernel_size = 7, pooling = 'maxpool',base_capacity=None,floor_alpha = None,skip = None,normalize=None, 
@@ -336,17 +194,27 @@ class AdaptiveSnapKVCluster():
         bsz, num_heads, q_len, head_dim = query_states.shape
         attn_weights = torch.matmul(query_states[..., -self.window_size:, :], key_states.transpose(2, 3)) / math.sqrt(
             head_dim)
-        mask = torch.full((self.window_size, self.window_size), torch.finfo(attn_weights.dtype).min,
+        # Handle case where sequence length < window_size
+        seq_len = attn_weights.size(-1)
+        actual_window = min(self.window_size, seq_len)
+        
+        mask = torch.full((actual_window, actual_window), torch.finfo(attn_weights.dtype).min,
                           device=attn_weights.device)
         mask_cond = torch.arange(mask.size(-1), device=attn_weights.device)
         mask.masked_fill_(mask_cond < (mask_cond + 1).view(mask.size(-1), 1), 0)
         mask = mask.to(attn_weights.device)
         attention_mask = mask[None, None, :, :]
 
-        attn_weights[:, :, -self.window_size:, -self.window_size:] += attention_mask
+        attn_weights[:, :, -actual_window:, -actual_window:] += attention_mask
 
         attn_weights = nn.functional.softmax(attn_weights, dim=-1, dtype=torch.float32).to(query_states.dtype)
-        attn_weights_mean = attn_weights[:, :, -self.window_size:, : -self.window_size].mean(dim=-2)
+        
+        # Calculate mean attention weights, handling short sequences
+        if seq_len > actual_window:
+            attn_weights_mean = attn_weights[:, :, -actual_window:, : -actual_window].mean(dim=-2)
+        else:
+            # If sequence is too short, use all positions
+            attn_weights_mean = attn_weights[:, :, :, :].mean(dim=-2)
 
         if self.gqa_support:
             attn_weights_mean = attn_weights_mean.view(attn_weights_mean.shape[0],num_heads//self.num_key_value_groups,self.num_key_value_groups,-1)
@@ -381,7 +249,8 @@ class AdaptiveSnapKVCluster():
         key_states = repeat_kv(origin_key_states, self.num_key_value_groups)
         # value_states = repeat_kv(origin_value_states, self.num_key_value_groups)
 
-        # check if prefix phase        assert key_states.shape[-2] == query_states.shape[-2]
+        # check if prefix phase        
+        assert key_states.shape[-2] == query_states.shape[-2]
         _device = key_states.device
         bsz, num_heads, q_len, head_dim = query_states.shape
         attn_score= self.calcul_attn_sore(key_states,query_states)
@@ -500,15 +369,14 @@ class AdaptiveSnapKVCluster():
 
         return heads_key_states, heads_value_states
 
-    
-        
 
     # update without gqa_support
     def update_kv_wo_gqa(self,  origin_key_states, query_states, origin_value_states):
         key_states = repeat_kv(origin_key_states, self.num_key_value_groups)
         value_states = repeat_kv(origin_value_states, self.num_key_value_groups)
 
-        # check if prefix phase        assert key_states.shape[-2] == query_states.shape[-2]
+        # check if prefix phase        
+        assert key_states.shape[-2] == query_states.shape[-2]
         _device = key_states.device
         bsz, num_heads, q_len, head_dim = query_states.shape
         attn_score= self.calcul_attn_sore(key_states,query_states)
@@ -595,7 +463,9 @@ class AdaptiveSnapKVCluster():
         for head_idx in range(num_heads):
             cache_index = sorted_attn_score_indices[head_idx][...,:head_adaptive_capacity[0][head_idx]]
 
-            l = cache_index.shape[-1] + self.window_size
+            # Handle case where sequence length < window_size
+            actual_window = min(self.window_size, q_len)
+            l = cache_index.shape[-1] + actual_window
             k_lens.append(l)
             max_seqlen_k = max(max_seqlen_k, l)
             klen_sum += l
@@ -603,8 +473,8 @@ class AdaptiveSnapKVCluster():
             cache_index = cache_index.view(1, 1, -1, 1).expand(-1, -1, -1, head_dim)
             top_Kcache = origin_heads_key_states[head_idx].gather(dim=2,index=cache_index)
             top_Vcache = origin_heads_value_states[head_idx].gather(dim=2,index=cache_index)
-            selected_k = torch.cat([top_Kcache,origin_heads_key_states[head_idx][:, :, -self.window_size:, :]],dim=2)
-            selected_v = torch.cat([top_Vcache,origin_heads_value_states[head_idx][:, :, -self.window_size:, :]],dim=2)
+            selected_k = torch.cat([top_Kcache,origin_heads_key_states[head_idx][:, :, -actual_window:, :]],dim=2)
+            selected_v = torch.cat([top_Vcache,origin_heads_value_states[head_idx][:, :, -actual_window:, :]],dim=2)
 
             # NOTE: flatten view
             heads_key_states.append(selected_k.view(-1, head_dim))
@@ -715,8 +585,3 @@ def init_slm(self,**kwargs):
             max_capacity_prompt = self.config.base_capacity,
             )
         print(f"Compress config(SLM): max_cap={self.config.base_capacity}")
-
-
-
-
-
