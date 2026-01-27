@@ -250,7 +250,7 @@ def slm_llama_flash_attn2_forward(
         position_ids=position_ids,
         dropout=dropout_rate,
         sliding_window=getattr(self, "sliding_window", None),
-        use_top_left_mask=self._flash_attn_uses_top_left_mask,
+        use_top_left_mask=getattr(self, "_flash_attn_uses_top_left_mask", False),
         is_causal=self.is_causal,
     )
 
