@@ -65,20 +65,32 @@ def replace_mistral_adaptive():
 def replace_llama_fixed():
     check_version()
     transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_llama
-    transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = fixed_llama_flash_attn2_forward
+    try:
+        transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = fixed_llama_flash_attn2_forward
+    except AttributeError:
+        # Fallback for newer transformers where LlamaFlashAttention2 might be merged or renamed
+        transformers.models.llama.modeling_llama.LlamaAttention.forward = fixed_llama_flash_attn2_forward
     transformers.models.llama.modeling_llama.LlamaModel.forward = fixed_LlamaModel_forward
 
 def replace_llama_adaptive():
     check_version()
     transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation = ada_prepare_inputs_for_generation_llama
-    transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = adaptive_llama_flash_attn2_forward
+    try:
+        transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = adaptive_llama_flash_attn2_forward
+    except AttributeError:
+        # Fallback for newer transformers where LlamaFlashAttention2 might be merged or renamed
+        transformers.models.llama.modeling_llama.LlamaAttention.forward = adaptive_llama_flash_attn2_forward
     transformers.models.llama.modeling_llama.LlamaModel.forward = adaptive_LlamaModel_forward
 
 
 def replace_llama_slm():
     check_version()
     transformers.models.llama.modeling_llama.LlamaForCausalLM.prepare_inputs_for_generation = fixed_prepare_inputs_for_generation_llama
-    transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = slm_llama_flash_attn2_forward
+    try:
+        transformers.models.llama.modeling_llama.LlamaFlashAttention2.forward = slm_llama_flash_attn2_forward
+    except AttributeError:
+        # Fallback for newer transformers where LlamaFlashAttention2 might be merged or renamed
+        transformers.models.llama.modeling_llama.LlamaAttention.forward = slm_llama_flash_attn2_forward
     transformers.models.llama.modeling_llama.LlamaModel.forward = slm_LlamaModel_forward
 
 def replace_mistral_slm():
